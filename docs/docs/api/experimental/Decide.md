@@ -1,10 +1,9 @@
 # dspy.experimental.Decide
 
 !!! warning "Experimental API"
-    `Decide`, `Noul`, `Score`, `Choice`, and `TypeSafe` are experimental and may
+    `Decide`, `DecideOptimizer`, `Noul`, `Score`, `Choice`, and `TypeSafe` are experimental and may
     change or be removed without warning. Import them from `dspy.experimental`.
-    The planned cascade and numeric optimizer will also start as experimental
-    APIs; neither is included in this release.
+    Cascade composition is not included.
 
 `Decide` answers closed-set questions through a System One model. Declare the
 answer space through types; the module owns the numeric parameters used to
@@ -115,7 +114,60 @@ with no positive mass remaining after weighting raise `ValueError`.
 
 Thresholds and weights belong to the module, separately for each output. Changing
 them does not alter shared types, previous results, or the provider request, so
-cached answers can be reused. No optimizer is included here.
+cached answers can be reused. `DecideOptimizer` can fit these parameters against
+a whole-program metric.
+
+## Fit numeric parameters
+
+```python
+from dspy.experimental import DecideOptimizer
+
+def metric(example, prediction):
+    return bool(prediction.urgent) == example.urgent
+
+# trainset contains labeled dspy.Examples with ticket marked as an input.
+optimizer = DecideOptimizer(metric=metric, max_rounds=3, grid_size=21, num_threads=4)
+tuned = optimizer.compile(assess, trainset=trainset)
+tuned.save("assess-tuned.json")
+```
+
+The optimizer returns a deep copy and leaves the student's parameters unchanged.
+It discovers `Decide` parameters through `named_parameters()`, including those in
+mixed programs. Ordinary `Predict` modules still execute, but their signatures,
+demonstrations, and LM configuration are not optimized. Discovery follows DSPy's
+existing rules for frozen, compiled subprograms. The returned program is marked
+compiled and uses the existing `Decide` save/load format; no optimizer object is
+needed at inference time.
+
+Search visits modules in discovery order and fits one coordinate at a time.
+Within each module, Boolean fields come first, followed by Score and Choice
+fields in signature order:
+
+- Boolean thresholds: an evenly spaced [0, 1] grid, including both endpoints.
+- Score weights: the same grid scaled to the declared rubric range, rejecting
+  candidates that violate strict ordering. These are numeric option values,
+  **not cut points or probability multipliers**. End weights can move inward.
+- Choice weights: multipliers 0.25, 0.5, 1, 2, and 4 for each option. Missing
+  multipliers retain their implicit value of 1 unless an explicit value improves
+  the metric. Existing zero or off-grid weights can be retained; search does not
+  introduce new zero weights.
+
+Every candidate is evaluated against the mean per-example metric of the complete
+program. Only strict improvements are accepted; ties keep the current values.
+The search revisits coordinates for up to `max_rounds` sweeps and stops after a
+sweep without improvement. `grid_size` defaults to 21 and `max_rounds` to 3.
+This is a bounded, order-dependent greedy search, not joint global optimization
+or statistical confidence calibration. Use deterministic metrics and a separate
+held-out evaluation set to assess generalization. Empty training sets, missing
+discoverable `Decide` parameters, invalid initial parameters, evaluation errors,
+and nonfinite metric values fail compilation.
+
+Each trial runs the program normally. Identical TypeSafe requests can reuse
+DSPy's cache, but changed intermediate values or control flow can cause new
+requests. There is no frozen-trace replay or promise of zero additional inference.
+No prompts, questions, demonstrations, or routing policies are rewritten or fitted.
+Choice fitting preserves raw provider confidence even when selection changes;
+that confidence must not be interpreted as confidence in the weighted selection.
 
 ## Confidence is source-dependent
 
@@ -178,6 +230,10 @@ trusted-pickle workflow and must never be loaded from untrusted sources.
 ::: dspy.experimental.Decide
     options:
         members: [__init__, forward, aforward, dump_state, load_state]
+
+::: dspy.experimental.DecideOptimizer
+    options:
+        members: [__init__, compile]
 
 ::: dspy.experimental.Noul
     options:

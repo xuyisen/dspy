@@ -4,7 +4,7 @@ import json
 import pytest
 
 import dspy
-from dspy.experimental import TypeSafe
+from dspy.experimental import Decide, DecideOptimizer, TypeSafe
 from tests.predict.test_decide import decide
 
 sdk = pytest.importorskip("typesafe_sdk")
@@ -128,3 +128,35 @@ def test_client_copy_and_environment(monkeypatch, transport):
     duplicate.history.clear()
     assert len(client.history) == 1
     assert "api_key" not in client.dump_state()
+
+
+def test_optimizer_reuses_requests_but_reexecutes_downstream_decisions(transport, tmp_path):
+    class Program(dspy.Module):
+        def __init__(self):
+            self.first = Decide("text -> flag: bool")
+            self.second = Decide("text, flag: bool -> answer: bool")
+
+        def forward(self, text):
+            flag = self.first(text=text).flag
+            return dspy.Prediction(flag=flag, answer=self.second(text=text, flag=flag).answer)
+
+    student = Program()
+    client = TypeSafe("jev-test", api_key="test-only", base_url="https://example.test")
+    optimizer = DecideOptimizer(metric=lambda e, p: int(not p.flag) + int(not p.answer), num_threads=2)
+    with dspy.context(system_one=client):
+        optimized = optimizer.compile(student, trainset=[dspy.Example(text="x").with_inputs("text")])
+        assert optimized(text="x").toDict() == {"flag": False, "answer": False}
+    assert optimized.first.thresholds == {"flag": 0.85}
+    assert optimized.second.thresholds == {"answer": 0.85}
+    assert student.first.thresholds == {"flag": 0.5}
+    assert student.second.thresholds == {"answer": 0.5}
+    assert len(transport) == 3  # One first-stage request and two distinct downstream inputs.
+    assert [body["state"] for _, body in transport] == [
+        {"text": "x"},
+        {"text": "x", "flag": True},
+        {"text": "x", "flag": False},
+    ]
+    optimized.save(tmp_path / "program.json")
+    restored = Program()
+    restored.load(tmp_path / "program.json")
+    assert restored.dump_state() == optimized.dump_state()
