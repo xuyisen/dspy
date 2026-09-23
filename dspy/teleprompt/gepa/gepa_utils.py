@@ -217,9 +217,9 @@ class DspyAdapter(GEPAAdapter[Example, TraceData, Prediction]):
                     )
                     d["Feedback"] = fb["feedback"]
                     if self.keep_module_scores:
-                        d['score'] = module_score
+                        d["score"] = module_score
                     else:
-                        d['score'] = fb['score']
+                        d["score"] = fb["score"]
 
                 items.append(d)
 
